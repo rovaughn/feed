@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"flag"
 	"fmt"
 	"github.com/BurntSushi/toml"
 	"github.com/jmoiron/sqlx"
@@ -163,6 +164,10 @@ func toLogOdds(odds map[string]odds) map[string]float64 {
 }
 
 func main() {
+	var addr string
+	flag.StringVar(&addr, "addr", ":8080", "Address to listen on")
+	flag.Parse()
+
 	var config struct {
 		Feeds map[string]string `json:"feeds"`
 	}
@@ -291,6 +296,6 @@ func main() {
 		}
 	})
 
-	log.Print("Listening on :8080")
-	http.ListenAndServe(":8080", nil)
+	log.Printf("Listening on %s", addr)
+	http.ListenAndServe(addr, nil)
 }
