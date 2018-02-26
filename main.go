@@ -51,7 +51,7 @@ func refresh(db *sqlx.DB, feeds map[string]string) {
 				}
 
 				if _, err := db.Exec(`
-					INSERT INTO item (loaded, feed, guid, title, link)
+					INSERT OR IGNORE INTO item (loaded, feed, guid, title, link)
 					VALUES (strftime('%s'), ?, ?, ?, ?)
 				`, feed, item.GUID, item.Title, item.Link); err != nil {
 					log.Printf("Inserting feed=%q guid=%q title=%q link=%q: %s", feed, item.GUID, item.Title, item.Link, err)
