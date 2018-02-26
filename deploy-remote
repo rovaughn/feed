@@ -1,0 +1,8 @@
+#!/bin/bash
+set -eux
+GOBIN=~/go/bin go get
+go build -o feed
+sudo pkill -f feed
+sudo nohup ./feed -addr :80 >log 2>&1 </dev/null &
+PID=$!
+sleep 10

@@ -8,7 +8,6 @@ import (
 	"github.com/jmoiron/sqlx"
 	_ "github.com/mattn/go-sqlite3"
 	"github.com/mmcdole/gofeed"
-	"golang.org/x/sync/errgroup"
 	"html/template"
 	"log"
 	"math"
@@ -17,6 +16,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -30,34 +30,37 @@ func splitWords(title string) []string {
 	return words
 }
 
-func refresh(db *sqlx.DB, feeds map[string]string) error {
+func refresh(db *sqlx.DB, feeds map[string]string) {
 	fp := gofeed.NewParser()
-	var group errgroup.Group
+	var group sync.WaitGroup
 	for feed, url := range feeds {
 		feed := feed
 		url := url
-		group.Go(func() error {
+		group.Add(1)
+		go func() {
+			defer group.Done()
 			time.Sleep(time.Duration(rand.Intn(2000)) * time.Millisecond)
 			downloaded, err := fp.ParseURL(url)
 			if err != nil {
 				log.Printf("Parsing feed for %q (%q): %s", feed, url, err)
-				return nil
 			}
 
 			for _, item := range downloaded.Items {
+				if item.GUID == "" {
+					item.GUID = item.Link
+				}
+
 				if _, err := db.Exec(`
-					INSERT OR IGNORE INTO item (feed, guid, title, link)
-					VALUES (?, ?, ?, ?)
+					INSERT INTO item (loaded, feed, guid, title, link)
+					VALUES (strftime('%s'), ?, ?, ?, ?)
 				`, feed, item.GUID, item.Title, item.Link); err != nil {
-					return err
+					log.Printf("Inserting feed=%q guid=%q title=%q link=%q: %s", feed, item.GUID, item.Title, item.Link, err)
 				}
 			}
-
-			return nil
-		})
+		}()
 	}
 
-	return group.Wait()
+	group.Wait()
 }
 
 type odds struct {
@@ -168,16 +171,16 @@ func main() {
 	flag.StringVar(&addr, "addr", ":8080", "Address to listen on")
 	flag.Parse()
 
-	var config struct {
-		Feeds map[string]string `json:"feeds"`
-	}
-
-	if _, err := toml.DecodeFile("config.toml", &config); err != nil {
+	templ, err := template.ParseFiles("template.html")
+	if err != nil {
 		panic(err)
 	}
 
-	templ, err := template.ParseFiles("template.html")
-	if err != nil {
+	var config struct {
+		Feeds map[string]string
+	}
+
+	if _, err := toml.DecodeFile("config.toml", &config); err != nil {
 		panic(err)
 	}
 
@@ -187,14 +190,7 @@ func main() {
 	}
 	defer db.Close()
 
-	http.HandleFunc("/refresh", func(w http.ResponseWriter, r *http.Request) {
-		if err := refresh(db, config.Feeds); err != nil {
-			panic(err)
-		}
-		http.Redirect(w, r, "/", http.StatusFound)
-	})
-
-	http.HandleFunc("/classifier", func(w http.ResponseWriter, r *http.Request) {
+	http.HandleFunc("/info", func(w http.ResponseWriter, r *http.Request) {
 		c, err := createClassifier(db)
 		if err != nil {
 			panic(err)
@@ -239,8 +235,13 @@ func main() {
 	})
 
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/" {
-			return
+		var lastLoadedUnix *int64
+		if err := db.QueryRow(`SELECT MAX(loaded) FROM item`).Scan(&lastLoadedUnix); err != nil {
+			panic(err)
+		}
+
+		if lastLoadedUnix == nil || time.Since(time.Unix(*lastLoadedUnix, 0)) >= time.Hour {
+			refresh(db, config.Feeds)
 		}
 
 		c, err := createClassifier(db)
@@ -277,7 +278,7 @@ func main() {
 			return items[i].Odds > items[j].Odds
 		})
 
-		const maxItems = 6
+		const maxItems = 12
 		shownItems := items
 		if len(shownItems) > maxItems {
 			shownItems = shownItems[:maxItems]

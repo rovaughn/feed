@@ -3,13 +3,51 @@
 <html>
 	<head>
 <style>
-a {
-	text-decoration: none;
-}
+	body {
+		background-color: black;
+		color: white;
+		font-size: 50px;
+	}
 
-a:hover {
-	text-decoration: underline;
-}
+	a, a:visited, a:active {
+		text-decoration: none;
+	}
+
+	a {
+		color: #eee;
+	}
+
+	a:visited {
+		color: #aaa;
+	}
+
+	a:hover {
+		text-decoration: underline;
+		color: #eee;
+	}
+
+	.counts {
+		text-align: center;
+	}
+
+	.feedname {
+		color: #aaa;
+	}
+
+	.item {
+		border-bottom: 1px solid black;
+		padding: 1em 0.5em;
+	}
+
+	input[type="submit"] {
+		font-size: 60px;
+		width: 100%;
+		background-color: black;
+		color: white;
+		padding: 0.5em;
+		-webkit-appearance: none;
+		border: none;
+	}
 </style>
 	</head>
 	<body>
@@ -24,15 +62,20 @@ function presubmit() {
 	document.forms.form.judgements.value = JSON.stringify(judgements);
 }
 		</script>
-		<p>{{.Shown}} &bull; {{.Elided}}</p>
-		<ul>
+		<p class="counts">{{.Shown}} &bull; {{.Elided}}</p>
 		{{range .Items}}
-		<li>{{.Feed}}: <a target="_blank" onclick="judgements[{{.GUID}}] = true" href="{{.Link}}">{{.Title}}</a> ({{printf "%.2f" .Odds}})</li>
+		<hr>
+		<a target="_blank" onclick="judgements[{{.GUID}}] = true" href="{{.Link}}">
+			<div class="item">
+				<span class="feedname">{{.Feed}}</span><br>
+				{{.Title}}
+			</div>
+		</a>
 		{{end}}
-		</ul>
+		<hr>
 		<form id="form" method="POST" action="/submit" onsubmit="presubmit()">
 			<input type="hidden" name="judgements">
-			<p><input type="submit" value="Done"></p>
+			<p><input type="submit" value="next">
 		</form>
 	</body>
 </html>
