@@ -1,0 +1,39 @@
+{{define "index"}}
+<!DOCTYPE html>
+<html>
+	<head>
+<style>
+a {
+	text-decoration: none;
+}
+
+a:hover {
+	text-decoration: underline;
+}
+</style>
+	</head>
+	<body>
+		<script>
+var judgements = {
+	{{range .Items}}
+	{{.GUID}}: false,
+	{{end}}
+};
+
+function presubmit() {
+	document.forms.form.judgements.value = JSON.stringify(judgements);
+}
+		</script>
+		<p>{{.Shown}} &bull; {{.Elided}}</p>
+		<ul>
+		{{range .Items}}
+		<li>{{.Feed}}: <a target="_blank" onclick="judgements[{{.GUID}}] = true" href="{{.Link}}">{{.Title}}</a> ({{printf "%.2f" .Odds}})</li>
+		{{end}}
+		</ul>
+		<form id="form" method="POST" action="/submit" onsubmit="presubmit()">
+			<input type="hidden" name="judgements">
+			<p><input type="submit" value="Done"></p>
+		</form>
+	</body>
+</html>
+{{end}}
