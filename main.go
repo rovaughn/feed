@@ -43,6 +43,7 @@ func refresh(db *sqlx.DB, feeds map[string]string) {
 			downloaded, err := fp.ParseURL(url)
 			if err != nil {
 				log.Printf("Parsing feed for %q (%q): %s", feed, url, err)
+				return
 			}
 
 			for _, item := range downloaded.Items {
@@ -240,7 +241,7 @@ func main() {
 			panic(err)
 		}
 
-		if lastLoadedUnix == nil || time.Since(time.Unix(*lastLoadedUnix, 0)) >= time.Hour {
+		if lastLoadedUnix == nil || time.Since(time.Unix(*lastLoadedUnix, 0)) >= 10*time.Minute {
 			refresh(db, config.Feeds)
 		}
 
