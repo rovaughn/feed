@@ -67,7 +67,7 @@ function presubmit() {
 		<hr>
 		<a target="_blank" onclick="judgements[{{.GUID}}] = true" href="{{.Link}}">
 			<div class="item">
-				<span class="feedname">{{.Feed}}</span><br>
+				<span class="feedname">{{.Feed}} ({{printf "%.1f" .Odds}})</span><br>
 				{{.Title}}
 			</div>
 		</a>

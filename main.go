@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"github.com/BurntSushi/toml"
 	"github.com/jmoiron/sqlx"
+	"github.com/kljensen/snowball"
 	_ "github.com/mattn/go-sqlite3"
 	"github.com/mmcdole/gofeed"
 	"html/template"
@@ -20,12 +21,16 @@ import (
 	"time"
 )
 
-var wordRe = regexp.MustCompile(`([a-zA-Z]+)`)
+var wordRe = regexp.MustCompile(`([a-zA-Z']+)`)
 
 func splitWords(title string) []string {
-	words := wordRe.FindAllString(title, -1)
+	words := wordRe.FindAllString(strings.ToLower(title), -1)
 	for i, word := range words {
-		words[i] = strings.ToLower(word)
+		stem, err := snowball.Stem(word, "english", true)
+		if err != nil {
+			log.Printf("err %s", err)
+		}
+		words[i] = stem
 	}
 	return words
 }
@@ -197,8 +202,7 @@ func main() {
 			panic(err)
 		}
 
-		fmt.Fprintf(w, "initial = %f\n", c.initial)
-		fmt.Fprintf(w, "\n")
+		fmt.Fprintf(w, "initial = %f\n\n", c.initial)
 
 		sorted := make([]string, 0, len(c.features))
 		for name := range c.features {
@@ -207,6 +211,15 @@ func main() {
 		sort.Slice(sorted, func(i, j int) bool {
 			return c.features[sorted[i]] > c.features[sorted[j]]
 		})
+
+		fmt.Fprintf(w, "feeds\n")
+		for _, name := range sorted {
+			if strings.HasPrefix(name, "feed:") && !strings.Contains(name, "/") {
+				fmt.Fprintf(w, "%s = %f\n", name, c.features[name])
+			}
+		}
+
+		fmt.Fprintf(w, "\nall\n")
 		for _, name := range sorted {
 			fmt.Fprintf(w, "%s = %f\n", name, c.features[name])
 		}
@@ -267,9 +280,7 @@ func main() {
 				panic(err)
 			}
 			c.classify(&item)
-			if item.Odds > -1 {
-				items = append(items, item)
-			}
+			items = append(items, item)
 		}
 		if err := rows.Err(); err != nil {
 			panic(err)
@@ -279,7 +290,7 @@ func main() {
 			return items[i].Odds > items[j].Odds
 		})
 
-		const maxItems = 12
+		const maxItems = 3
 		shownItems := items
 		if len(shownItems) > maxItems {
 			shownItems = shownItems[:maxItems]
