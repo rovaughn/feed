@@ -62,6 +62,7 @@ function presubmit() {
 	document.forms.form.judgements.value = JSON.stringify(judgements);
 }
 		</script>
+		<noscript><p>Remember to enable JS!</p></noscript>
 		<p class="counts">{{.Shown}} &bull; {{.Elided}}</p>
 		{{range .Items}}
 		<hr>
@@ -73,7 +74,7 @@ function presubmit() {
 		</a>
 		{{end}}
 		<hr>
-		<form id="form" method="POST" action="/submit" onsubmit="presubmit()">
+		<form id="form" method="POST" action="/test/" onsubmit="presubmit()">
 			<input type="hidden" name="judgements">
 			<p><input type="submit" value="next">
 		</form>

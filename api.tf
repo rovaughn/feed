@@ -83,11 +83,6 @@ resource "aws_lambda_function" "api" {
 	timeout          = 16
   memory_size      = 1024
 
-  #vpc_config {
-  #  subnet_ids         = ["${aws_subnet.a.id}", "${aws_subnet.b.id}"]
-  #  security_group_ids = ["${aws_security_group.lambda.id}"]
-  #}
-
   environment {
     variables = {
       environment = "lambda"
@@ -107,27 +102,11 @@ resource "aws_api_gateway_rest_api" "api" {
   name = "${var.name}-api"
 }
 
-resource "aws_api_gateway_method" "api_root_options" {
-  rest_api_id   = "${aws_api_gateway_rest_api.api.id}"
-  resource_id   = "${aws_api_gateway_rest_api.api.root_resource_id}"
-  http_method   = "OPTIONS"
-  authorization = "NONE"
-}
-
 resource "aws_api_gateway_method" "api_root_get" {
   rest_api_id   = "${aws_api_gateway_rest_api.api.id}"
   resource_id   = "${aws_api_gateway_rest_api.api.root_resource_id}"
   http_method   = "GET"
   authorization = "NONE"
-}
-
-resource "aws_api_gateway_integration" "api_root_options" {
-  rest_api_id             = "${aws_api_gateway_rest_api.api.id}"
-  resource_id             = "${aws_api_gateway_rest_api.api.root_resource_id}"
-  http_method             = "OPTIONS"
-  integration_http_method = "POST"
-  type                    = "AWS_PROXY"
-  uri                     = "arn:aws:apigateway:${var.region}:lambda:path/2015-03-31/functions/${aws_lambda_function.api.arn}/invocations"
 }
 
 resource "aws_api_gateway_integration" "api_root_get" {
@@ -139,10 +118,26 @@ resource "aws_api_gateway_integration" "api_root_get" {
   uri                     = "arn:aws:apigateway:${var.region}:lambda:path/2015-03-31/functions/${aws_lambda_function.api.arn}/invocations"
 }
 
+resource "aws_api_gateway_method" "api_root_post" {
+  rest_api_id   = "${aws_api_gateway_rest_api.api.id}"
+  resource_id   = "${aws_api_gateway_rest_api.api.root_resource_id}"
+  http_method   = "POST"
+  authorization = "NONE"
+}
+
+resource "aws_api_gateway_integration" "api_root_post" {
+  rest_api_id             = "${aws_api_gateway_rest_api.api.id}"
+  resource_id             = "${aws_api_gateway_rest_api.api.root_resource_id}"
+  http_method             = "POST"
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = "arn:aws:apigateway:${var.region}:lambda:path/2015-03-31/functions/${aws_lambda_function.api.arn}/invocations"
+}
+
 resource "aws_api_gateway_deployment" "api_deployment" {
   depends_on = [
-    "aws_api_gateway_integration.api_root_options",
     "aws_api_gateway_integration.api_root_get",
+    "aws_api_gateway_integration.api_root_post"
   ]
 
   rest_api_id = "${aws_api_gateway_rest_api.api.id}"

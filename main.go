@@ -109,8 +109,6 @@ func handler(req events.APIGatewayProxyRequest) (*events.APIGatewayProxyResponse
 			},
 		}, nil
 	} else if req.HTTPMethod == "GET" && req.Path == "/" {
-		//refresh()
-
 		type feedItem struct {
 			GUID  string
 			Feed  string
@@ -174,11 +172,13 @@ func handler(req events.APIGatewayProxyRequest) (*events.APIGatewayProxyResponse
 			},
 			Body: buf.String(),
 		}, nil
-	} else if req.HTTPMethod == "POST" && req.Path == "/submit" {
+	} else if req.HTTPMethod == "POST" && req.Path == "/" {
 		values, err := url.ParseQuery(req.Body)
 		if err != nil {
 			return nil, err
 		}
+
+		log.Printf("Request body: %q", req.Body)
 
 		var judgements map[string]bool
 		if err := json.Unmarshal([]byte(values.Get("judgements")), &judgements); err != nil {
@@ -195,13 +195,14 @@ func handler(req events.APIGatewayProxyRequest) (*events.APIGatewayProxyResponse
 			}
 
 			if _, err := svc.UpdateItem(&dynamodb.UpdateItemInput{
-				TableName:           aws.String("items"),
-				ConditionExpression: aws.String("guid = :guid"),
-				ExpressionAttributeValues: map[string]*dynamodb.AttributeValue{
-					":guid":  &dynamodb.AttributeValue{S: aws.String(guid)},
-					":label": &dynamodb.AttributeValue{S: aws.String(label)},
+				TableName: aws.String("items"),
+				Key: map[string]*dynamodb.AttributeValue{
+					"guid": &dynamodb.AttributeValue{S: aws.String(guid)},
 				},
 				UpdateExpression: aws.String("SET label = :label"),
+				ExpressionAttributeValues: map[string]*dynamodb.AttributeValue{
+					":label": &dynamodb.AttributeValue{S: aws.String(label)},
+				},
 			}); err != nil {
 				return nil, err
 			}
@@ -210,7 +211,7 @@ func handler(req events.APIGatewayProxyRequest) (*events.APIGatewayProxyResponse
 		return &events.APIGatewayProxyResponse{
 			StatusCode: http.StatusFound,
 			Headers: map[string]string{
-				"Location": "/",
+				"Location": "/test/",
 			},
 		}, nil
 	}
@@ -259,6 +260,7 @@ func main() {
 		log.Println("Serving graphql on", addr)
 		log.Fatal(http.ListenAndServe(addr, nil))
 	case "lambda":
+		refresh()
 		lambda.Start(handler)
 	default:
 		panic("Unknown environment")
