@@ -12,7 +12,7 @@ aws dynamodb scan \
 	--filter-expression 'label <> :none' \
 	--expression-attribute-values '{":none":{"S":"none"}}' \
 	--query "Items[*].[join('', ['__label__', label.S]),  feed.S, title.S]" \
-	--output text >data
+	--output text | sort -R >data
 
 nlines=$(wc -l <data)
 trainlines=$(printf "%.0f" $(echo "0.8 * $nlines" | bc))
