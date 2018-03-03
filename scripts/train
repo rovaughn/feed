@@ -1,5 +1,6 @@
 #1/bin/sh
 set -eu
+
 dir=$(mktemp -d)
 trap 'rm -rf "$dir"' EXIT
 cd "$dir"
@@ -21,7 +22,5 @@ fasttext supervised \
 	-lr 0.4 \
 	-wordNgrams 2
 
-zstd -k model.bin
-
-#echo "Uploading model..."
-#aws s3 cp model.bin s3://alec-personal/feed/model.bin
+echo "Uploading model..."
+aws s3 cp model.bin s3://alec-personal/feed/model.bin
