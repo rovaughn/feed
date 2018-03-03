@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -10,10 +11,13 @@ import (
 	_ "github.com/mattn/go-sqlite3"
 	"github.com/mmcdole/gofeed"
 	"html/template"
+	"io/ioutil"
 	"log"
-	"math"
 	"math/rand"
 	"net/http"
+	"os"
+	"os/exec"
+	"path"
 	"regexp"
 	"sort"
 	"strings"
@@ -69,21 +73,6 @@ func refresh(db *sqlx.DB, feeds map[string]string) {
 	group.Wait()
 }
 
-type odds struct {
-	a, b int
-}
-
-func (o odds) add(p odds) odds {
-	return odds{
-		a: o.a + p.a,
-		b: o.b + p.b,
-	}
-}
-
-func (o odds) log() float64 {
-	return math.Log(float64(o.a+1) / float64(o.b+1))
-}
-
 type item struct {
 	Feed      string `db:"feed"`
 	GUID      string `db:"guid"`
@@ -93,83 +82,172 @@ type item struct {
 	Odds      float64
 }
 
-func (item item) features() map[string]bool {
-	result := make(map[string]bool)
-	result["feed:"+item.Feed] = true
-	for _, word := range splitWords(item.Title) {
-		result["feed:"+item.Feed+"/word:"+word] = true
-	}
-	return result
+func (i item) classifiableString() string {
+	return fmt.Sprintf("_feed_%s %s", i.Feed, strings.Join(splitWords(i.Title), " "))
+}
+
+type classifyReq struct {
+	item item
+	done chan float64
 }
 
 type classifier struct {
-	initial  float64
-	features map[string]float64
+	classifyCh chan classifyReq
+	quitCh     chan struct{}
 }
 
-func createClassifier(db *sqlx.DB) (*classifier, error) {
-	var initialOdds odds
-	features := make(map[string]odds)
+func newClassifier() *classifier {
+	return &classifier{
+		classifyCh: make(chan classifyReq),
+		quitCh:     make(chan struct{}),
+	}
+}
 
-	rows, err := db.Queryx(`
-			SELECT feed, guid, title, link, judgement
+func (c *classifier) classify(item item) float64 {
+	done := make(chan float64)
+	c.classifyCh <- classifyReq{
+		item: item,
+		done: done,
+	}
+	return <-done
+}
+
+func (c *classifier) quit() {
+	c.quitCh <- struct{}{}
+}
+
+func (c *classifier) serve(db *sqlx.DB) error {
+	dir, err := ioutil.TempDir(".", "fasttext")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(dir)
+
+	{
+		trainingData, err := os.Create(path.Join(dir, "data"))
+		if err != nil {
+			return err
+		}
+		defer trainingData.Close()
+
+		rows, err := db.Queryx(`
+			SELECT judgement, feed, title
 			FROM item
 			WHERE judgement IS NOT NULL
+			ORDER BY RANDOM()
 		`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var item item
-		if err := rows.StructScan(&item); err != nil {
-			return nil, err
+		if err != nil {
+			return err
 		}
+		defer rows.Close()
+		for rows.Next() {
+			var item item
+			if err := rows.StructScan(&item); err != nil {
+				return err
+			}
 
-		var incr odds
-		if *item.Judgement {
-			incr = odds{1, 0}
-		} else {
-			incr = odds{0, 1}
-		}
+			var label string
+			if *item.Judgement {
+				label = "1"
+			} else {
+				label = "0"
+			}
 
-		initialOdds = initialOdds.add(incr)
-		itemFeatures := item.features()
-		for feature := range itemFeatures {
-			conditions := strings.Split(feature, "/")
-			if len(conditions) == 1 || len(conditions) == 2 && itemFeatures[conditions[0]] {
-				features[feature] = features[feature].add(incr)
+			if _, err := fmt.Fprintf(trainingData, "__label__%s %s\n", label, item.classifiableString()); err != nil {
+				return err
 			}
 		}
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
+		if err := rows.Err(); err != nil {
+			return err
+		}
+
+		if err := trainingData.Close(); err != nil {
+			return err
+		}
 	}
 
-	featuresLog := make(map[string]float64, len(features))
-	for feature, odds := range features {
-		featuresLog[feature] = odds.log()
+	{
+		cmd := exec.Command(
+			"fasttext", "supervised",
+			"-input", "data",
+			"-output", "model",
+			"-epoch", "20",
+			"-lr", "0.4",
+			"-wordNgrams", "2",
+		)
+		cmd.Stderr = os.Stderr
+		cmd.Stdout = os.Stdout
+		cmd.Dir = dir
+		trainingData, err := cmd.StdinPipe()
+		if err != nil {
+			return err
+		}
+		defer trainingData.Close()
+
+		if err := cmd.Start(); err != nil {
+			return err
+		}
+
+		if err := trainingData.Close(); err != nil {
+			return err
+		}
+
+		if err := cmd.Wait(); err != nil {
+			return err
+		}
 	}
 
-	return &classifier{
-		initial:  initialOdds.log(),
-		features: featuresLog,
-	}, nil
-}
-
-func (c *classifier) classify(item *item) {
-	item.Odds = c.initial
-	for feature := range item.features() {
-		item.Odds += c.features[feature]
+	cmd := exec.Command("fasttext", "predict-prob", "model.bin", "-")
+	cmd.Dir = dir
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return err
 	}
-}
+	defer stdin.Close()
 
-func toLogOdds(odds map[string]odds) map[string]float64 {
-	result := make(map[string]float64, len(odds))
-	for k, v := range odds {
-		result[k] = v.log()
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return err
 	}
-	return result
+	defer stdout.Close()
+
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+
+	scanner := bufio.NewScanner(stdout)
+
+	for {
+		select {
+		case <-c.quitCh:
+			return nil
+		case req := <-c.classifyCh:
+			s := req.item.classifiableString()
+			if _, err := fmt.Fprintf(stdin, "%s\n", s); err != nil {
+				return err
+			}
+
+			if !scanner.Scan() {
+				return fmt.Errorf("Expected response: %s", scanner.Err())
+			}
+
+			var label string
+			var prob float64
+			if _, err := fmt.Sscanf(scanner.Text(), "%s %f\n", &label, &prob); err != nil {
+				return err
+			}
+
+			switch label {
+			case "__label__1":
+			case "__label__0":
+				prob = 1 - prob
+			default:
+				return fmt.Errorf("fasttext returned unknown odds: %q", label)
+			}
+
+			req.done <- prob
+		}
+	}
 }
 
 func main() {
@@ -196,35 +274,6 @@ func main() {
 	}
 	defer db.Close()
 
-	http.HandleFunc("/info", func(w http.ResponseWriter, r *http.Request) {
-		c, err := createClassifier(db)
-		if err != nil {
-			panic(err)
-		}
-
-		fmt.Fprintf(w, "initial = %f\n\n", c.initial)
-
-		sorted := make([]string, 0, len(c.features))
-		for name := range c.features {
-			sorted = append(sorted, name)
-		}
-		sort.Slice(sorted, func(i, j int) bool {
-			return c.features[sorted[i]] > c.features[sorted[j]]
-		})
-
-		fmt.Fprintf(w, "feeds\n")
-		for _, name := range sorted {
-			if strings.HasPrefix(name, "feed:") && !strings.Contains(name, "/") {
-				fmt.Fprintf(w, "%s = %f\n", name, c.features[name])
-			}
-		}
-
-		fmt.Fprintf(w, "\nall\n")
-		for _, name := range sorted {
-			fmt.Fprintf(w, "%s = %f\n", name, c.features[name])
-		}
-	})
-
 	http.HandleFunc("/submit", func(w http.ResponseWriter, r *http.Request) {
 		if err := r.ParseForm(); err != nil {
 			panic(err)
@@ -249,19 +298,27 @@ func main() {
 	})
 
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/" {
+			return
+		}
+
 		var lastLoadedUnix *int64
 		if err := db.QueryRow(`SELECT MAX(loaded) FROM item`).Scan(&lastLoadedUnix); err != nil {
 			panic(err)
 		}
 
-		if lastLoadedUnix == nil || time.Since(time.Unix(*lastLoadedUnix, 0)) >= 10*time.Minute {
-			refresh(db, config.Feeds)
-		}
+		//if lastLoadedUnix == nil || time.Since(time.Unix(*lastLoadedUnix, 0)) >= 10*time.Minute {
+		//	refresh(db, config.Feeds)
+		//}
 
-		c, err := createClassifier(db)
-		if err != nil {
-			panic(err)
-		}
+		c := newClassifier()
+
+		go func() {
+			if err := c.serve(db); err != nil {
+				panic(err)
+			}
+		}()
+		defer c.quit()
 
 		items := make([]item, 0)
 		rows, err := db.Queryx(`
@@ -279,7 +336,8 @@ func main() {
 			if err := rows.StructScan(&item); err != nil {
 				panic(err)
 			}
-			c.classify(&item)
+			odds := c.classify(item)
+			item.Odds = odds
 			items = append(items, item)
 		}
 		if err := rows.Err(); err != nil {
