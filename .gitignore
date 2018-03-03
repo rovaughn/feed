@@ -1,2 +1,7 @@
+.terraform
+api.zip
 config.toml
-db.sqlite3
+fasttext
+main
+terraform.tfstate.backup
+terraform.tfvars

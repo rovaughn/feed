@@ -1,57 +1,68 @@
 package main
 
 import (
-	"bufio"
+	"bytes"
 	"encoding/json"
 	"flag"
-	"fmt"
-	"github.com/BurntSushi/toml"
-	"github.com/jmoiron/sqlx"
-	"github.com/kljensen/snowball"
-	_ "github.com/mattn/go-sqlite3"
+	"github.com/aws/aws-lambda-go/events"
+	"github.com/aws/aws-lambda-go/lambda"
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/aws/awserr"
+	"github.com/aws/aws-sdk-go/aws/session"
+	"github.com/aws/aws-sdk-go/service/dynamodb"
 	"github.com/mmcdole/gofeed"
 	"html/template"
 	"io/ioutil"
 	"log"
 	"math/rand"
 	"net/http"
+	"net/url"
 	"os"
-	"os/exec"
-	"path"
-	"regexp"
 	"sort"
-	"strings"
 	"sync"
 	"time"
 )
 
-var wordRe = regexp.MustCompile(`([a-zA-Z']+)`)
+var sess = session.Must(session.NewSession())
 
-func splitWords(title string) []string {
-	words := wordRe.FindAllString(strings.ToLower(title), -1)
-	for i, word := range words {
-		stem, err := snowball.Stem(word, "english", true)
-		if err != nil {
-			log.Printf("err %s", err)
+var c = func() *classifier {
+	c := newClassifier()
+	go func() {
+		if err := c.serve(); err != nil {
+			log.Printf("classifier: %s", err)
 		}
-		words[i] = stem
-	}
-	return words
-}
+	}()
+	return c
+}()
 
-func refresh(db *sqlx.DB, feeds map[string]string) {
+func refresh() {
+	svc := dynamodb.New(sess)
 	fp := gofeed.NewParser()
+
+	log.Printf("Refreshing...")
+	result, err := svc.Scan(&dynamodb.ScanInput{
+		TableName:            aws.String("feeds"),
+		ProjectionExpression: aws.String("feed, link"),
+	})
+	if err != nil {
+		log.Printf("Scanning feeds: %s", err)
+		return
+	}
+
 	var group sync.WaitGroup
-	for feed, url := range feeds {
-		feed := feed
-		url := url
+	for _, item := range result.Items {
+		item := item
 		group.Add(1)
 		go func() {
 			defer group.Done()
+
+			feed := *item["feed"].S
+			link := *item["link"].S
+
 			time.Sleep(time.Duration(rand.Intn(2000)) * time.Millisecond)
-			downloaded, err := fp.ParseURL(url)
+			downloaded, err := fp.ParseURL(link)
 			if err != nil {
-				log.Printf("Parsing feed for %q (%q): %s", feed, url, err)
+				log.Printf("Parsing feed for %q (%q): %s", feed, link, err)
 				return
 			}
 
@@ -60,292 +71,79 @@ func refresh(db *sqlx.DB, feeds map[string]string) {
 					item.GUID = item.Link
 				}
 
-				if _, err := db.Exec(`
-					INSERT OR IGNORE INTO item (loaded, feed, guid, title, link)
-					VALUES (strftime('%s'), ?, ?, ?, ?)
-				`, feed, item.GUID, item.Title, item.Link); err != nil {
-					log.Printf("Inserting feed=%q guid=%q title=%q link=%q: %s", feed, item.GUID, item.Title, item.Link, err)
+				if _, err := svc.PutItem(&dynamodb.PutItemInput{
+					TableName:           aws.String("items"),
+					ConditionExpression: aws.String("attribute_not_exists(guid)"),
+					Item: map[string]*dynamodb.AttributeValue{
+						"label": &dynamodb.AttributeValue{S: aws.String("none")},
+						"feed":  &dynamodb.AttributeValue{S: aws.String(feed)},
+						"guid":  &dynamodb.AttributeValue{S: aws.String(item.GUID)},
+						"title": &dynamodb.AttributeValue{S: aws.String(item.Title)},
+						"link":  &dynamodb.AttributeValue{S: aws.String(item.Link)},
+					},
+				}); err != nil {
+					if awsErr, ok := err.(awserr.Error); ok && awsErr.Code() == dynamodb.ErrCodeConditionalCheckFailedException {
+						// don't log
+					} else {
+						log.Printf("Inserting item: %s", err)
+					}
 				}
 			}
 		}()
 	}
 
 	group.Wait()
+	log.Printf("Done")
 }
 
-type item struct {
-	Feed      string `db:"feed"`
-	GUID      string `db:"guid"`
-	Title     string `db:"title"`
-	Link      string `db:"link"`
-	Judgement *bool  `db:"judgement"`
-	Odds      float64
-}
+var templ = template.Must(template.ParseFiles("template.html"))
 
-func (i item) classifiableString() string {
-	return fmt.Sprintf("_feed_%s %s", i.Feed, strings.Join(splitWords(i.Title), " "))
-}
+func handler(req events.APIGatewayProxyRequest) (*events.APIGatewayProxyResponse, error) {
+	log.Printf("%s %s", req.HTTPMethod, req.Path)
+	if req.HTTPMethod == "OPTIONS" {
+		return &events.APIGatewayProxyResponse{
+			StatusCode: http.StatusOK,
+			Headers: map[string]string{
+				"Access-Control-Allow-Headers": "content-type",
+				"Access-Control-Allow-Origin":  "*",
+			},
+		}, nil
+	} else if req.HTTPMethod == "GET" && req.Path == "/" {
+		//refresh()
 
-type classifyReq struct {
-	item item
-	done chan float64
-}
+		type feedItem struct {
+			GUID  string
+			Feed  string
+			Link  string
+			Title string
+			Score float64
+		}
 
-type classifier struct {
-	classifyCh chan classifyReq
-	quitCh     chan struct{}
-}
-
-func newClassifier() *classifier {
-	return &classifier{
-		classifyCh: make(chan classifyReq),
-		quitCh:     make(chan struct{}),
-	}
-}
-
-func (c *classifier) classify(item item) float64 {
-	done := make(chan float64)
-	c.classifyCh <- classifyReq{
-		item: item,
-		done: done,
-	}
-	return <-done
-}
-
-func (c *classifier) quit() {
-	c.quitCh <- struct{}{}
-}
-
-func (c *classifier) serve(db *sqlx.DB) error {
-	dir, err := ioutil.TempDir(".", "fasttext")
-	if err != nil {
-		return err
-	}
-	defer os.RemoveAll(dir)
-
-	{
-		trainingData, err := os.Create(path.Join(dir, "data"))
+		items := make([]feedItem, 0)
+		svc := dynamodb.New(sess)
+		result, err := svc.Scan(&dynamodb.ScanInput{
+			TableName:            aws.String("items"),
+			ProjectionExpression: aws.String("feed, guid, title, link"),
+			FilterExpression:     aws.String(`label = :none`),
+			ExpressionAttributeValues: map[string]*dynamodb.AttributeValue{
+				":none": &dynamodb.AttributeValue{S: aws.String("none")},
+			},
+		})
 		if err != nil {
-			return err
+			return nil, err
 		}
-		defer trainingData.Close()
-
-		rows, err := db.Queryx(`
-			SELECT judgement, feed, title
-			FROM item
-			WHERE judgement IS NOT NULL
-			ORDER BY RANDOM()
-		`)
-		if err != nil {
-			return err
-		}
-		defer rows.Close()
-		for rows.Next() {
-			var item item
-			if err := rows.StructScan(&item); err != nil {
-				return err
-			}
-
-			var label string
-			if *item.Judgement {
-				label = "1"
-			} else {
-				label = "0"
-			}
-
-			if _, err := fmt.Fprintf(trainingData, "__label__%s %s\n", label, item.classifiableString()); err != nil {
-				return err
-			}
-		}
-		if err := rows.Err(); err != nil {
-			return err
-		}
-
-		if err := trainingData.Close(); err != nil {
-			return err
-		}
-	}
-
-	{
-		cmd := exec.Command(
-			"fasttext", "supervised",
-			"-input", "data",
-			"-output", "model",
-			"-epoch", "20",
-			"-lr", "0.4",
-			"-wordNgrams", "2",
-		)
-		cmd.Stderr = os.Stderr
-		cmd.Stdout = os.Stdout
-		cmd.Dir = dir
-		trainingData, err := cmd.StdinPipe()
-		if err != nil {
-			return err
-		}
-		defer trainingData.Close()
-
-		if err := cmd.Start(); err != nil {
-			return err
-		}
-
-		if err := trainingData.Close(); err != nil {
-			return err
-		}
-
-		if err := cmd.Wait(); err != nil {
-			return err
-		}
-	}
-
-	cmd := exec.Command("fasttext", "predict-prob", "model.bin", "-")
-	cmd.Dir = dir
-	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		return err
-	}
-	defer stdin.Close()
-
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return err
-	}
-	defer stdout.Close()
-
-	if err := cmd.Start(); err != nil {
-		return err
-	}
-
-	scanner := bufio.NewScanner(stdout)
-
-	for {
-		select {
-		case <-c.quitCh:
-			return nil
-		case req := <-c.classifyCh:
-			s := req.item.classifiableString()
-			if _, err := fmt.Fprintf(stdin, "%s\n", s); err != nil {
-				return err
-			}
-
-			if !scanner.Scan() {
-				return fmt.Errorf("Expected response: %s", scanner.Err())
-			}
-
-			var label string
-			var prob float64
-			if _, err := fmt.Sscanf(scanner.Text(), "%s %f\n", &label, &prob); err != nil {
-				return err
-			}
-
-			switch label {
-			case "__label__1":
-			case "__label__0":
-				prob = 1 - prob
-			default:
-				return fmt.Errorf("fasttext returned unknown odds: %q", label)
-			}
-
-			req.done <- prob
-		}
-	}
-}
-
-func main() {
-	var addr string
-	flag.StringVar(&addr, "addr", ":8080", "Address to listen on")
-	flag.Parse()
-
-	templ, err := template.ParseFiles("template.html")
-	if err != nil {
-		panic(err)
-	}
-
-	var config struct {
-		Feeds map[string]string
-	}
-
-	if _, err := toml.DecodeFile("config.toml", &config); err != nil {
-		panic(err)
-	}
-
-	db, err := sqlx.Open("sqlite3", "db.sqlite3")
-	if err != nil {
-		panic(err)
-	}
-	defer db.Close()
-
-	http.HandleFunc("/submit", func(w http.ResponseWriter, r *http.Request) {
-		if err := r.ParseForm(); err != nil {
-			panic(err)
-		}
-
-		var judgements map[string]bool
-		if err := json.Unmarshal([]byte(r.Form.Get("judgements")), &judgements); err != nil {
-			panic(err)
-		}
-
-		for guid, judgement := range judgements {
-			if _, err := db.Exec(`
-					UPDATE item
-					SET judgement = ?
-					WHERE guid = ?
-				`, judgement, guid); err != nil {
-				panic(err)
-			}
-		}
-
-		http.Redirect(w, r, "/", http.StatusFound)
-	})
-
-	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/" {
-			return
-		}
-
-		var lastLoadedUnix *int64
-		if err := db.QueryRow(`SELECT MAX(loaded) FROM item`).Scan(&lastLoadedUnix); err != nil {
-			panic(err)
-		}
-
-		//if lastLoadedUnix == nil || time.Since(time.Unix(*lastLoadedUnix, 0)) >= 10*time.Minute {
-		//	refresh(db, config.Feeds)
-		//}
-
-		c := newClassifier()
-
-		go func() {
-			if err := c.serve(db); err != nil {
-				panic(err)
-			}
-		}()
-		defer c.quit()
-
-		items := make([]item, 0)
-		rows, err := db.Queryx(`
-			SELECT feed, guid, title, link, judgement
-			FROM item
-			WHERE judgement IS NULL
-			ORDER BY RANDOM()
-		`)
-		if err != nil {
-			panic(err)
-		}
-		defer rows.Close()
-		for rows.Next() {
-			var item item
-			if err := rows.StructScan(&item); err != nil {
-				panic(err)
-			}
-			odds := c.classify(item)
-			item.Odds = odds
-			items = append(items, item)
-		}
-		if err := rows.Err(); err != nil {
-			panic(err)
+		for _, item := range result.Items {
+			items = append(items, feedItem{
+				GUID:  *item["guid"].S,
+				Link:  *item["link"].S,
+				Feed:  *item["feed"].S,
+				Title: *item["title"].S,
+				Score: c.classify(classifiableString(item)),
+			})
 		}
 
 		sort.Slice(items, func(i, j int) bool {
-			return items[i].Odds > items[j].Odds
+			return items[i].Score > items[j].Score
 		})
 
 		const maxItems = 3
@@ -354,8 +152,9 @@ func main() {
 			shownItems = shownItems[:maxItems]
 		}
 
-		if err := templ.ExecuteTemplate(w, "index", struct {
-			Items  []item
+		var buf bytes.Buffer
+		if err := templ.ExecuteTemplate(&buf, "index", struct {
+			Items  []feedItem
 			Shown  int
 			Elided int
 		}{
@@ -363,10 +162,105 @@ func main() {
 			Shown:  len(shownItems),
 			Elided: len(items) - len(shownItems),
 		}); err != nil {
-			panic(err)
+			return nil, err
 		}
-	})
 
-	log.Printf("Listening on %s", addr)
-	http.ListenAndServe(addr, nil)
+		return &events.APIGatewayProxyResponse{
+			StatusCode: http.StatusOK,
+			Headers: map[string]string{
+				"Access-Control-Allow-Origin":  "*",
+				"Access-Control-Allow-Headers": "content-type",
+				"Content-Type":                 "text/html",
+			},
+			Body: buf.String(),
+		}, nil
+	} else if req.HTTPMethod == "POST" && req.Path == "/submit" {
+		values, err := url.ParseQuery(req.Body)
+		if err != nil {
+			return nil, err
+		}
+
+		var judgements map[string]bool
+		if err := json.Unmarshal([]byte(values.Get("judgements")), &judgements); err != nil {
+			return nil, err
+		}
+
+		svc := dynamodb.New(sess)
+		for guid, judgement := range judgements {
+			var label string
+			if judgement {
+				label = "1"
+			} else {
+				label = "0"
+			}
+
+			if _, err := svc.UpdateItem(&dynamodb.UpdateItemInput{
+				TableName:           aws.String("items"),
+				ConditionExpression: aws.String("guid = :guid"),
+				ExpressionAttributeValues: map[string]*dynamodb.AttributeValue{
+					":guid":  &dynamodb.AttributeValue{S: aws.String(guid)},
+					":label": &dynamodb.AttributeValue{S: aws.String(label)},
+				},
+				UpdateExpression: aws.String("SET label = :label"),
+			}); err != nil {
+				return nil, err
+			}
+		}
+
+		return &events.APIGatewayProxyResponse{
+			StatusCode: http.StatusFound,
+			Headers: map[string]string{
+				"Location": "/",
+			},
+		}, nil
+	}
+
+	return &events.APIGatewayProxyResponse{
+		StatusCode: http.StatusNotFound,
+		Body:       "Invalid method or path",
+	}, nil
+}
+
+func main() {
+	log.Printf("Starting lambda function up")
+
+	switch os.Getenv("environment") {
+	case "local":
+		var addr string
+		flag.StringVar(&addr, "addr", ":80", "Address to listen on")
+		flag.Parse()
+
+		http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+			var req events.APIGatewayProxyRequest
+			req.HTTPMethod = r.Method
+			req.Path = r.URL.Path
+			body, err := ioutil.ReadAll(r.Body)
+			if err != nil {
+				panic(err)
+			}
+			req.Body = string(body)
+
+			res, err := handler(req)
+			if err != nil {
+				panic(err)
+			}
+
+			for key, value := range res.Headers {
+				w.Header().Add(key, value)
+			}
+
+			w.WriteHeader(res.StatusCode)
+
+			if _, err := w.Write([]byte(res.Body)); err != nil {
+				panic(err)
+			}
+		})
+
+		log.Println("Serving graphql on", addr)
+		log.Fatal(http.ListenAndServe(addr, nil))
+	case "lambda":
+		lambda.Start(handler)
+	default:
+		panic("Unknown environment")
+	}
 }
