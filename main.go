@@ -96,6 +96,9 @@ func refresh() {
 	log.Printf("Done")
 }
 
+var refreshLock sync.Mutex
+var lastRefresh time.Time
+
 var templ = template.Must(template.ParseFiles("template.html"))
 
 func handler(req events.APIGatewayProxyRequest) (*events.APIGatewayProxyResponse, error) {
@@ -109,6 +112,14 @@ func handler(req events.APIGatewayProxyRequest) (*events.APIGatewayProxyResponse
 			},
 		}, nil
 	} else if req.HTTPMethod == "GET" && req.Path == "/" {
+		refreshLock.Lock()
+		defer refreshLock.Unlock()
+
+		if time.Since(lastRefresh) > 10*time.Minute {
+			refresh()
+			lastRefresh = time.Now()
+		}
+
 		type feedItem struct {
 			GUID  string
 			Feed  string
@@ -260,7 +271,6 @@ func main() {
 		log.Println("Serving graphql on", addr)
 		log.Fatal(http.ListenAndServe(addr, nil))
 	case "lambda":
-		refresh()
 		lambda.Start(handler)
 	default:
 		panic("Unknown environment")
