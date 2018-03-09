@@ -7,14 +7,11 @@ import (
 	"github.com/aws/aws-lambda-go/events"
 	"github.com/aws/aws-lambda-go/lambda"
 	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/aws/awserr"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/dynamodb"
-	"github.com/mmcdole/gofeed"
 	"html/template"
 	"io/ioutil"
 	"log"
-	"math/rand"
 	"net/http"
 	"net/url"
 	"os"
@@ -34,67 +31,6 @@ var c = func() *classifier {
 	}()
 	return c
 }()
-
-func refresh() {
-	svc := dynamodb.New(sess)
-	fp := gofeed.NewParser()
-
-	log.Printf("Refreshing...")
-	result, err := svc.Scan(&dynamodb.ScanInput{
-		TableName:            aws.String("feeds"),
-		ProjectionExpression: aws.String("feed, link"),
-	})
-	if err != nil {
-		log.Printf("Scanning feeds: %s", err)
-		return
-	}
-
-	var group sync.WaitGroup
-	for _, item := range result.Items {
-		item := item
-		group.Add(1)
-		go func() {
-			defer group.Done()
-
-			feed := *item["feed"].S
-			link := *item["link"].S
-
-			time.Sleep(time.Duration(rand.Intn(2000)) * time.Millisecond)
-			downloaded, err := fp.ParseURL(link)
-			if err != nil {
-				log.Printf("Parsing feed for %q (%q): %s", feed, link, err)
-				return
-			}
-
-			for _, item := range downloaded.Items {
-				if item.GUID == "" {
-					item.GUID = item.Link
-				}
-
-				if _, err := svc.PutItem(&dynamodb.PutItemInput{
-					TableName:           aws.String("items"),
-					ConditionExpression: aws.String("attribute_not_exists(guid)"),
-					Item: map[string]*dynamodb.AttributeValue{
-						"label": &dynamodb.AttributeValue{S: aws.String("none")},
-						"feed":  &dynamodb.AttributeValue{S: aws.String(feed)},
-						"guid":  &dynamodb.AttributeValue{S: aws.String(item.GUID)},
-						"title": &dynamodb.AttributeValue{S: aws.String(item.Title)},
-						"link":  &dynamodb.AttributeValue{S: aws.String(item.Link)},
-					},
-				}); err != nil {
-					if awsErr, ok := err.(awserr.Error); ok && awsErr.Code() == dynamodb.ErrCodeConditionalCheckFailedException {
-						// don't log
-					} else {
-						log.Printf("Inserting item: %s", err)
-					}
-				}
-			}
-		}()
-	}
-
-	group.Wait()
-	log.Printf("Done")
-}
 
 var refreshLock sync.Mutex
 var lastRefresh time.Time

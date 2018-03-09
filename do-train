@@ -1,0 +1,7 @@
+#!/bin/sh
+set -eux
+instance_id=i-0db0a3db91d8ed1ba
+aws ec2 start-instances --instance-ids "$instance_id"
+ssh workstation-large bash -c './train'
+aws ec2 stop-instances --instance-ids "$instance_id"
+
