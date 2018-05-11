@@ -2,6 +2,19 @@
 set -eux
 instance_id=i-0db0a3db91d8ed1ba
 aws ec2 start-instances --instance-ids "$instance_id"
+while true; do
+	state=$(
+		aws ec2 describe-instance-status \
+			--instance-ids "$instance_id" \
+			--query 'InstanceStatuses[0].InstanceState.Name' \
+			--output text
+	)
+	echo "STATE IS $state"
+	if [ "$state" = "running" ]; then
+		break
+	fi
+	sleep 1
+done
 ssh workstation-large bash -c './train'
 aws ec2 stop-instances --instance-ids "$instance_id"
 
