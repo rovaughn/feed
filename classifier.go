@@ -3,19 +3,13 @@ package main
 import (
 	"bufio"
 	"fmt"
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/service/dynamodb"
-	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/kljensen/snowball"
-	"io"
 	"io/ioutil"
 	"log"
 	"os"
 	"os/exec"
-	"path"
 	"regexp"
 	"strings"
-	"syscall"
 )
 
 var wordRe = regexp.MustCompile(`([a-zA-Z']+)`)
@@ -32,14 +26,21 @@ func preprocessString(title string) string {
 	return strings.Join(words, " ")
 }
 
-func classifiableString(item map[string]*dynamodb.AttributeValue) string {
-	//title := preprocessString(*item["title"].S)
-	title := *item["title"].S
-	feed := *item["feed"].S
-	if label, labelExists := item["label"]; labelExists {
-		return fmt.Sprintf("__label__%s %s %s", *label.S, feed, title)
+type feedItem struct {
+	GUID  string
+	Feed  string
+	Link  string
+	Title string
+	Score float64
+	Label string
+}
+
+func classifiableString(item feedItem) string {
+	//title := preprocessString(item.title)
+	if item.Label != "" {
+		return fmt.Sprintf("__label__%s %s %s", item.Label, item.Feed, item.Title)
 	}
-	return fmt.Sprintf("%s %s", feed, title)
+	return fmt.Sprintf("%s %s", item.Feed, item.Title)
 }
 
 type classifyReq struct {
@@ -47,19 +48,29 @@ type classifyReq struct {
 	done chan float64
 }
 
-type classifier struct {
+type classifier interface {
+	classify(item string) float64
+}
+
+type zeroClassifier struct{}
+
+func (c *zeroClassifier) classify(item string) float64 {
+	return 0
+}
+
+type realClassifier struct {
 	classifyCh chan classifyReq
 	quitCh     chan struct{}
 }
 
-func newClassifier() *classifier {
-	return &classifier{
+func newClassifier() *realClassifier {
+	return &realClassifier{
 		classifyCh: make(chan classifyReq),
 		quitCh:     make(chan struct{}),
 	}
 }
 
-func (c *classifier) classify(item string) float64 {
+func (c *realClassifier) classify(item string) float64 {
 	done := make(chan float64)
 	c.classifyCh <- classifyReq{
 		item: item,
@@ -68,46 +79,37 @@ func (c *classifier) classify(item string) float64 {
 	return <-done
 }
 
-func (c *classifier) quit() {
+func (c *realClassifier) quit() {
 	c.quitCh <- struct{}{}
 }
 
-func (c *classifier) serve() error {
+func (c *realClassifier) serve() error {
 	dir, err := ioutil.TempDir("", "classifier")
 	if err != nil {
-		return err
+		return fmt.Errorf("Creating classifier temporary directory: %s", err)
 	}
 	defer os.RemoveAll(dir)
 
-	fifo := path.Join(dir, "fifo")
-	if err := syscall.Mkfifo(fifo, 0600); err != nil {
-		return err
-	}
-
-	svc := s3.New(sess)
-	result, err := svc.GetObject(&s3.GetObjectInput{
-		Bucket: aws.String("alec-personal"),
-		Key:    aws.String("feed/model.bin"),
-	})
+	cmd := exec.Command("./fasttext", "predict-prob", "model.bin", "-")
+	stderr, err := cmd.StderrPipe()
 	if err != nil {
-		return err
+		return fmt.Errorf("Creating stderr pipe to classifier: %s", err)
 	}
-	defer result.Body.Close()
 
 	go func() {
-		fifoFile, err := os.OpenFile(fifo, os.O_WRONLY, 0000)
-		if err != nil {
-			log.Printf("Opening fifo: %s", err)
-		}
-		defer fifoFile.Close()
+		scanner := bufio.NewScanner(stderr)
 
-		if _, err := io.Copy(fifoFile, result.Body); err != nil {
-			log.Printf("Copying: %s", err)
+		for scanner.Scan() {
+			log.Printf("Classifier: %q", scanner.Text())
+		}
+
+		if err := scanner.Err(); err != nil {
+			log.Printf("Scanning classifier stderr: %s", err)
+		} else {
+			log.Printf("Scanning classifier stderr: EOF")
 		}
 	}()
 
-	cmd := exec.Command("./fasttext", "predict-prob", fifo, "-")
-	cmd.Stderr = os.Stderr
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return fmt.Errorf("Creating stdin pipe to classifier: %s", err)
@@ -153,11 +155,9 @@ func (c *classifier) serve() error {
 				return fmt.Errorf("Scanning classifier response %q: %s", scanner.Text(), err)
 			}
 
-			switch label {
-			case "__label__1":
-			case "__label__0":
+			if label == "__label__0" {
 				prob = 1 - prob
-			default:
+			} else if label != "__label__1" {
 				return fmt.Errorf("Classifier returned unknown label: %q", label)
 			}
 

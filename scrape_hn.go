@@ -11,7 +11,7 @@ import (
 	"strings"
 )
 
-func scrapeHN(minScore int) ([]item, error) {
+func scrapeHN(minScore int) ([]feedItem, error) {
 	res, err := http.Get("https://news.ycombinator.com/")
 	if err != nil {
 		return nil, err
@@ -33,7 +33,7 @@ func scrapeHN(minScore int) ([]item, error) {
 
 	log.Printf("%d athings, %d subtexts", len(athings), len(subtexts))
 
-	items := make([]item, 0, 30)
+	items := make([]feedItem, 0, 30)
 	for i, athing := range athings {
 		if i >= len(subtexts) {
 			log.Printf("scrapeHN: missing subtext")
@@ -93,10 +93,10 @@ func scrapeHN(minScore int) ([]item, error) {
 
 		hnLink := "https://news.ycombinator.com/" + scrape.Attr(commentsLink, "href")
 
-		items = append(items, item{
-			title: fmt.Sprintf("(%s) %s", domain, title),
-			guid:  link,
-			link:  hnLink,
+		items = append(items, feedItem{
+			Title: fmt.Sprintf("(%s) %s", domain, title),
+			GUID:  link,
+			Link:  hnLink,
 		})
 	}
 

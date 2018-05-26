@@ -1,9 +1,7 @@
 package main
 
 import (
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/aws/awserr"
-	"github.com/aws/aws-sdk-go/service/dynamodb"
+	"database/sql"
 	"github.com/mmcdole/gofeed"
 	"log"
 	"math/rand"
@@ -13,58 +11,50 @@ import (
 	"time"
 )
 
-type item struct {
-	guid  string
-	link  string
-	title string
-}
-
-func scrapeFeed(link string) ([]item, error) {
+func scrapeFeed(link string) ([]feedItem, error) {
 	fp := gofeed.NewParser()
 	result, err := fp.ParseURL(link)
 	if err != nil {
 		return nil, err
 	}
 
-	items := make([]item, 0)
+	items := make([]feedItem, 0)
 	for _, i := range result.Items {
 		if i.GUID == "" {
 			i.GUID = i.Link
 		}
 
-		items = append(items, item{
-			guid:  i.GUID,
-			link:  i.Link,
-			title: i.Title,
+		items = append(items, feedItem{
+			GUID:  i.GUID,
+			Link:  i.Link,
+			Title: i.Title,
 		})
 	}
 
 	return items, nil
 }
 
-func refresh() {
-	svc := dynamodb.New(sess)
-
-	log.Printf("Refreshing...")
-	result, err := svc.Scan(&dynamodb.ScanInput{
-		TableName:            aws.String("feeds"),
-		ProjectionExpression: aws.String("feed, link"),
-	})
+func refresh(classifier classifier, db *sql.DB) error {
+	rows, err := db.Query(`
+		SELECT feed, link
+		FROM feed
+	`)
 	if err != nil {
-		log.Printf("Scanning feeds: %s", err)
-		return
+		return err
 	}
+	defer rows.Close()
 
 	var group sync.WaitGroup
-	for _, feedItem := range result.Items {
-		feedItem := feedItem
+	for rows.Next() {
+		var feed, link string
+		if err := rows.Scan(&feed, &link); err != nil {
+			return err
+		}
+
 		group.Add(1)
 		go func() {
 			defer group.Done()
 			time.Sleep(time.Duration(rand.Intn(2000)) * time.Millisecond)
-
-			feed := *feedItem["feed"].S
-			link := *feedItem["link"].S
 
 			parsedLink, err := url.Parse(link)
 			if err != nil {
@@ -72,7 +62,7 @@ func refresh() {
 				return
 			}
 
-			var items []item
+			var items []feedItem
 
 			if parsedLink.Host == "news.ycombinator.com" {
 				values := parsedLink.Query()
@@ -87,27 +77,24 @@ func refresh() {
 			}
 
 			for _, item := range items {
-				if _, err := svc.PutItem(&dynamodb.PutItemInput{
-					TableName:           aws.String("items"),
-					ConditionExpression: aws.String("attribute_not_exists(guid)"),
-					Item: map[string]*dynamodb.AttributeValue{
-						"label": &dynamodb.AttributeValue{S: aws.String("none")},
-						"feed":  &dynamodb.AttributeValue{S: aws.String(feed)},
-						"guid":  &dynamodb.AttributeValue{S: aws.String(item.guid)},
-						"title": &dynamodb.AttributeValue{S: aws.String(item.title)},
-						"link":  &dynamodb.AttributeValue{S: aws.String(item.link)},
-					},
-				}); err != nil {
-					if awsErr, ok := err.(awserr.Error); ok && awsErr.Code() == dynamodb.ErrCodeConditionalCheckFailedException {
-						// don't log
-					} else {
-						log.Printf("Inserting item %q: %s", item.guid, err)
-					}
+				score := classifier.classify(classifiableString(item))
+
+				if _, err := db.Exec(`
+					UPSERT INTO item (guid, judgement, score, feed, title, link)
+					VALUES (?, NULL, ?, ?, ?, ?)
+				`, item.GUID, score, feed, item.Title, item.Link); err != nil {
+					log.Printf("Inserting item from feed: %s", err)
 				}
 			}
 		}()
 	}
 
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
 	group.Wait()
 	log.Printf("Done")
+
+	return nil
 }

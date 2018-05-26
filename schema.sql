@@ -1,10 +1,15 @@
 CREATE TABLE item (
-	guid       TEXT NOT NULL UNIQUE,
-	loaded     INTEGER NOT NULL,
+	guid       TEXT NOT NULL PRIMARY KEY,
+	judgement  BOOLEAN NULL,
+	score      FLOAT NOT NULL,
 	feed       TEXT NOT NULL,
 	title      TEXT NOT NULL,
 	link       TEXT NOT NULL,
-	judgement  BOOLEAN NULL
+	INDEX judgement_idx (judgement),
+	INDEX score_idx (score)
 );
 
-CREATE INDEX item_loaded ON item(loaded);
+CREATE TABLE feed (
+	feed  TEXT NOT NULL,
+	link  TEXT NOT NULL
+);

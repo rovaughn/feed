@@ -1,7 +1,5 @@
-.terraform
-api.zip
 config.toml
+fastText-0.1.0
+fastText-0.1.0.zip
 fasttext
 main
-terraform.tfstate.backup
-terraform.tfvars
