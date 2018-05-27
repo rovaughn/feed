@@ -20,6 +20,10 @@ func main() {
 	}
 	defer db.Close()
 
+	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintln(w, "ok")
+	})
+
 	http.HandleFunc("/train", func(w http.ResponseWriter, r *http.Request) {
 		result, err := train(db)
 		if err != nil {
