@@ -64,7 +64,6 @@ function presubmit() {
 }
 		</script>
 		<noscript><p>Remember to enable JS!</p></noscript>
-		<p class="counts">{{.Shown}} &bull; {{.Elided}}</p>
 		{{range .Items}}
 		<hr>
 		<a target="_blank" onclick="judgements[{{.GUID}}] = true" href="{{.Link}}">
@@ -75,9 +74,9 @@ function presubmit() {
 		</a>
 		{{end}}
 		<hr>
-		<form id="form" method="POST" action="/test/" onsubmit="presubmit()">
+		<form id="form" method="POST" action="/submit" onsubmit="presubmit()">
 			<input type="hidden" name="judgements">
-			<p><input type="submit" value="next">
+			<p><input type="submit" value="next"></p>
 		</form>
 	</body>
 </html>

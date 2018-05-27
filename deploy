@@ -1,8 +1,0 @@
-#!/bin/sh
-set -eux
-go vet
-golint
-go get
-go test
-scp template.html init schema.sql deploy-remote main.go config.toml feed:~
-ssh feed '/bin/bash ./deploy-remote'

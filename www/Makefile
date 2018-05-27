@@ -1,4 +1,9 @@
-main: *.go
+.PHONY: run clean
+
+run: main fasttext
+	./www
+
+www: *.go
 	go vet
 	go build -o $@
 
@@ -13,3 +18,6 @@ fastText-0.1.0/fasttext: fastText-0.1.0
 
 fasttext: fastText-0.1.0/fasttext
 	cp $^ $@
+
+clean:
+	rm -rf fastText-0.1.0 fastText-0.1.0.zip fasttext www
