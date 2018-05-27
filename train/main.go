@@ -36,9 +36,9 @@ func main() {
 		}
 	})
 
-	const address = ":8001"
-	log.Printf("Listening on %q", address)
-	panic(http.ListenAndServe(address, nil))
+	listenAddress := os.Getenv("listen_address")
+	log.Printf("Listening on %q", listenAddress)
+	panic(http.ListenAndServe(listenAddress, nil))
 }
 
 type trainResult struct {
