@@ -6,11 +6,15 @@ import (
 	"html/template"
 	"log"
 	"net/http"
+	"os"
 	"sync"
 	"time"
 )
 
 func updateScores(classifier *classifier, db *sql.DB) error {
+	log.Printf("Updating scores...")
+	defer log.Printf("Done updating scores")
+
 	rows, err := db.Query(`
 		SELECT guid, title, feed
 		FROM item
@@ -50,14 +54,6 @@ func main() {
 	var classifierMutex sync.RWMutex
 	classifier := newClassifier()
 
-	if err := updateScores(classifier, db); err != nil {
-		log.Printf("Updating scores: %s", err)
-	}
-
-	if err := refresh(classifier, db); err != nil {
-		log.Printf("Refresh: %s", err)
-	}
-
 	//trainingDebouncer := newDebouncer(time.Hour)
 	//defer trainingDebouncer.stop()
 
@@ -88,6 +84,14 @@ func main() {
 		t := time.NewTicker(3 * time.Hour)
 		defer t.Stop()
 
+		if err := refresh(classifier, db); err != nil {
+			log.Printf("Refresh: %s", err)
+		}
+
+		if err := updateScores(classifier, db); err != nil {
+			log.Printf("Updating scores: %s", err)
+		}
+
 		for range t.C {
 			log.Printf("Refreshing...")
 			classifierMutex.RLock()
@@ -102,8 +106,14 @@ func main() {
 	var templ = template.Must(template.ParseFiles("template.html"))
 
 	http.HandleFunc("/click", func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			panic(err)
+		}
+
 		guid := r.Form.Get("guid")
 		link := r.Form.Get("link")
+
+		log.Printf("guid = %q, link = %q", guid, link)
 
 		if _, err := db.Exec(`
 			UPDATE item
@@ -116,6 +126,27 @@ func main() {
 		//trainingDebouncer.ping()
 
 		http.Redirect(w, r, link, http.StatusMovedPermanently)
+	})
+
+	http.HandleFunc("/submit", func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			panic(err)
+		}
+
+		// TODO could be more efficiently batched
+		for _, guid := range r.Form["guid"] {
+			if _, err := db.Exec(`
+				UPDATE item
+				SET judgement = FALSE
+				WHERE guid = $1 AND judgement IS NULL
+			`, guid); err != nil {
+				panic(err)
+			}
+		}
+
+		//trainingDebouncer.ping()
+
+		http.Redirect(w, r, "/", http.StatusFound)
 	})
 
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
@@ -163,23 +194,8 @@ func main() {
 		}
 	})
 
-	http.HandleFunc("/submit", func(w http.ResponseWriter, r *http.Request) {
-		// TODO could be more efficiently batched
-		for _, guid := range r.Form["guid"] {
-			if _, err := db.Exec(`
-				UPDATE item
-				SET judgement = FALSE
-				WHERE guid = $1 AND judgement IS NULL
-			`, guid); err != nil {
-				panic(err)
-			}
-		}
+	host := os.Getenv("host")
 
-		//trainingDebouncer.ping()
-
-		http.Redirect(w, r, "/", http.StatusFound)
-	})
-
-	log.Printf("Listening on :80")
-	log.Fatal(http.ListenAndServe(":80", nil))
+	log.Printf("Listening on %q", host)
+	log.Fatal(http.ListenAndServe(host, nil))
 }
