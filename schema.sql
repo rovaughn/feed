@@ -8,3 +8,8 @@ CREATE TABLE item (
 	INDEX judgement_idx (judgement),
 	INDEX score_idx (score)
 );
+
+CREATE TABLE feed (
+	name  TEXT NOT NULL,
+	link  TEXT NOT NULL
+);

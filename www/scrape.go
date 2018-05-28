@@ -11,10 +11,6 @@ import (
 	"time"
 )
 
-type config struct {
-	Feeds map[string]string `toml:"feeds"`
-}
-
 func scrapeFeed(link string) ([]feedItem, error) {
 	fp := gofeed.NewParser()
 
@@ -39,11 +35,24 @@ func scrapeFeed(link string) ([]feedItem, error) {
 	return items, nil
 }
 
-func refresh(config config, classifier *classifier, db *sql.DB) error {
+func refresh(classifier *classifier, db *sql.DB) error {
+	rows, err := db.Query(`
+		SELECT name, link
+		FROM feed
+	`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
 	var group sync.WaitGroup
-	for feed, link := range config.Feeds {
-		feed := feed
-		link := link
+	defer group.Wait()
+
+	for rows.Next() {
+		var feed, link string
+		if err := rows.Scan(&feed, &link); err != nil {
+			return err
+		}
 
 		group.Add(1)
 		go func() {
@@ -87,8 +96,9 @@ func refresh(config config, classifier *classifier, db *sql.DB) error {
 		}()
 	}
 
-	group.Wait()
-	log.Printf("Done")
+	if err := rows.Err(); err != nil {
+		return err
+	}
 
 	return nil
 }

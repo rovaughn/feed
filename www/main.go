@@ -3,8 +3,6 @@ package main
 import (
 	"database/sql"
 	"encoding/json"
-	"fmt"
-	"github.com/BurntSushi/toml"
 	_ "github.com/lib/pq"
 	"html/template"
 	"log"
@@ -42,11 +40,6 @@ func updateScores(classifier *classifier, db *sql.DB) error {
 }
 
 func main() {
-	var config config
-	if _, err := toml.DecodeFile("config.toml", &config); err != nil {
-		panic(fmt.Errorf("Decoding config.toml: %s", err))
-	}
-
 	db, err := sql.Open("postgres", "postgresql://feed@10.0.1.1:26257/feed?sslmode=disable")
 	if err != nil {
 		panic(err)
@@ -60,7 +53,7 @@ func main() {
 		log.Printf("Updating scores: %s", err)
 	}
 
-	if err := refresh(config, classifier, db); err != nil {
+	if err := refresh(classifier, db); err != nil {
 		log.Printf("Refresh: %s", err)
 	}
 
@@ -97,7 +90,7 @@ func main() {
 		for range t.C {
 			log.Printf("Refreshing...")
 			classifierMutex.RLock()
-			if err := refresh(config, classifier, db); err != nil {
+			if err := refresh(classifier, db); err != nil {
 				log.Printf("Refresh: %s", err)
 			}
 			classifierMutex.RUnlock()
