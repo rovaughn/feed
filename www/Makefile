@@ -1,6 +1,6 @@
 .PHONY: run clean
 
-run: main fasttext
+run: www fasttext
 	./www
 
 www: *.go
