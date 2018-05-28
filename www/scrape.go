@@ -36,6 +36,9 @@ func scrapeFeed(link string) ([]feedItem, error) {
 }
 
 func refresh(classifier *classifier, db *sql.DB) error {
+	log.Printf("Refreshing")
+	defer log.Printf("Done refreshing")
+
 	rows, err := db.Query(`
 		SELECT name, link
 		FROM feed

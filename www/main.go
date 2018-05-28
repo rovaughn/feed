@@ -2,7 +2,6 @@ package main
 
 import (
 	"database/sql"
-	"encoding/json"
 	_ "github.com/lib/pq"
 	"html/template"
 	"log"
@@ -40,11 +39,13 @@ func updateScores(classifier *classifier, db *sql.DB) error {
 }
 
 func main() {
+	log.Printf("Connecting to database...")
 	db, err := sql.Open("postgres", "postgresql://feed@10.0.1.1:26257/feed?sslmode=disable")
 	if err != nil {
 		panic(err)
 	}
 	defer db.Close()
+	log.Printf("Connected")
 
 	var classifierMutex sync.RWMutex
 	classifier := newClassifier()
@@ -100,6 +101,23 @@ func main() {
 
 	var templ = template.Must(template.ParseFiles("template.html"))
 
+	http.HandleFunc("/click", func(w http.ResponseWriter, r *http.Request) {
+		guid := r.Form.Get("guid")
+		link := r.Form.Get("link")
+
+		if _, err := db.Exec(`
+			UPDATE item
+			SET judgement = TRUE
+			WHERE guid = $1
+		`, guid); err != nil {
+			panic(err)
+		}
+
+		//trainingDebouncer.ping()
+
+		http.Redirect(w, r, link, http.StatusMovedPermanently)
+	})
+
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		rows, err := db.Query(`
 			SELECT guid, feed, title, link
@@ -146,21 +164,13 @@ func main() {
 	})
 
 	http.HandleFunc("/submit", func(w http.ResponseWriter, r *http.Request) {
-		if err := r.ParseForm(); err != nil {
-			panic(err)
-		}
-
-		var judgements map[string]bool
-		if err := json.Unmarshal([]byte(r.PostForm.Get("judgements")), &judgements); err != nil {
-			panic(err)
-		}
-
-		for guid, judgement := range judgements {
+		// TODO could be more efficiently batched
+		for _, guid := range r.Form["guid"] {
 			if _, err := db.Exec(`
 				UPDATE item
-				SET judgement = $1
-				WHERE guid = $2
-			`, judgement, guid); err != nil {
+				SET judgement = FALSE
+				WHERE guid = $1 AND judgement IS NULL
+			`, guid); err != nil {
 				panic(err)
 			}
 		}

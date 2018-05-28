@@ -52,21 +52,9 @@
 </style>
 	</head>
 	<body>
-		<script>
-var judgements = {
-	{{range .Items}}
-	{{.GUID}}: false,
-	{{end}}
-};
-
-function presubmit() {
-	document.forms.form.judgements.value = JSON.stringify(judgements);
-}
-		</script>
-		<noscript><p>Remember to enable JS!</p></noscript>
 		{{range .Items}}
 		<hr>
-		<a target="_blank" onclick="judgements[{{.GUID}}] = true" href="{{.Link}}">
+		<a target="_blank" href="/click?guid={{.GUID}}&link={{.Link}}">
 			<div class="item">
 				<span class="feedname">{{.Feed}} ({{printf "%.1f" .Score}})</span><br>
 				{{.Title}}
@@ -74,8 +62,10 @@ function presubmit() {
 		</a>
 		{{end}}
 		<hr>
-		<form id="form" method="POST" action="/submit" onsubmit="presubmit()">
-			<input type="hidden" name="judgements">
+		<form id="form" method="POST" action="/submit">
+			{{range .Items}}
+			<input type="hidden" name="guid" value="{{.GUID}}">
+			{{end}}
 			<p><input type="submit" value="next"></p>
 		</form>
 	</body>
