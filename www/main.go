@@ -47,7 +47,7 @@ func main() {
 		panic(fmt.Errorf("Decoding config.toml: %s", err))
 	}
 
-	db, err := sql.Open("postgres", "postgresql://localhost:26257/feed?sslmode=disable")
+	db, err := sql.Open("postgres", "postgresql://feed@10.0.1.1:26257/feed?sslmode=disable")
 	if err != nil {
 		panic(err)
 	}
@@ -64,28 +64,31 @@ func main() {
 		log.Printf("Refresh: %s", err)
 	}
 
-	go func() {
-		for range trainingDebouncer.C {
-			log.Printf("Training...")
-			if err := train(db); err != nil {
-				panic(err)
-			}
-			log.Printf("Done training")
+	//trainingDebouncer := newDebouncer(time.Hour)
+	//defer trainingDebouncer.stop()
 
-			classifierMutex.Lock()
-			if err := classifier.stop(); err != nil {
-				log.Printf("Stopping classifier: %s", err)
-			}
-			classifier = newClassifier()
-			classifierMutex.Unlock()
+	//go func() {
+	//	for range trainingDebouncer.C {
+	//		log.Printf("Training...")
+	//		if err := train(); err != nil {
+	//			panic(err)
+	//		}
+	//		log.Printf("Done training")
 
-			classifierMutex.RLock()
-			if err := updateScores(classifier, db); err != nil {
-				log.Printf("Updating scores: %s", err)
-			}
-			classifierMutex.RUnlock()
-		}
-	}()
+	//		classifierMutex.Lock()
+	//		if err := classifier.stop(); err != nil {
+	//			log.Printf("Stopping classifier: %s", err)
+	//		}
+	//		classifier = newClassifier()
+	//		classifierMutex.Unlock()
+
+	//		classifierMutex.RLock()
+	//		if err := updateScores(classifier, db); err != nil {
+	//			log.Printf("Updating scores: %s", err)
+	//		}
+	//		classifierMutex.RUnlock()
+	//	}
+	//}()
 
 	go func() {
 		t := time.NewTicker(3 * time.Hour)
@@ -169,9 +172,11 @@ func main() {
 			}
 		}
 
+		//trainingDebouncer.ping()
+
 		http.Redirect(w, r, "/", http.StatusFound)
 	})
 
-	log.Printf("Listening on :8000")
-	log.Fatal(http.ListenAndServe(":8000", nil))
+	log.Printf("Listening on :80")
+	log.Fatal(http.ListenAndServe(":80", nil))
 }
